@@ -1,4 +1,6 @@
-my_scrape <- scrape_data(pos = c("QB", "RB", "WR", "TE", "K", "DST", "DL", "LB", "DB"),
+my_scrape <- scrape_data(
+  src = c("CBS"),
+  pos = c("QB", "RB", "WR", "TE", "K", "DST", "DL", "LB", "DB"),
                         season = 2023,
                        week = 0)
 
