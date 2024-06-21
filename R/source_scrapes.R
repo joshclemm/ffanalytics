@@ -3,7 +3,6 @@
 # CBS ----
 scrape_cbs = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NULL, week = NULL,
                       draft = TRUE, weekly = TRUE) {
-  message("\nThe CBS scrape uses a 2 second delay between pages")
 
   if(is.null(season)) {
     season = get_scrape_year()
@@ -17,6 +16,8 @@ scrape_cbs = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NULL
   } else {
     scrape_week = week
   }
+
+  message("\nThe CBS scrape uses a 2 second delay between pages")
 
   base_link = paste0("https://www.cbssports.com/fantasy/football/")
   site_session = rvest::session(base_link)
@@ -43,12 +44,12 @@ scrape_cbs = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NULL
 
     # Get PID
     if(pos == "DST") {
-      site_id = html_page %>%
+      cbs_id = html_page %>%
         rvest::html_elements("span.TeamName a") %>%
         rvest::html_attr("href") %>%
         sub(".*?([A-Z]{2,3}).*", "\\1",  .)
     } else {
-      site_id = html_page %>%
+      cbs_id = html_page %>%
         rvest::html_elements("table > tbody > tr > td:nth-child(1) > span.CellPlayerName--long > span > a") %>%
         rvest::html_attr("href") %>%
         sub(".*?([0-9]+).*", "\\1", .)
@@ -64,20 +65,21 @@ scrape_cbs = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NULL
       out_df = out_df %>%
         tidyr::extract(player, c("player", "pos", "team"),
                        ".*?\\s{2,}[A-Z]{1,3}\\s{2,}[A-Z]{2,3}\\s{2,}(.*?)\\s{2,}(.*?)\\s{2,}(.*)") %>%
-        dplyr::mutate(src_id = site_id,
+        dplyr::mutate(src_id = cbs_id,
                       data_src = "CBS",
                       id = player_ids$id[match(src_id, player_ids$cbs_id)])
       out_df$id = get_mfl_id(
+        id_col = cbs_id,
         player_name = out_df$player,
         pos = out_df$pos,
         team = out_df$team
       )
     } else {
-      out_df$team = site_id
+      out_df$team = cbs_id
       out_df$data_src = "CBS"
       dst_ids = ff_player_data[ff_player_data$position == "Def", c("id", "team")]
       dst_ids$team[dst_ids$team == "OAK"] = "LV"
-      out_df$id = dst_ids$id[match(site_id, dst_ids$team)]
+      out_df$id = dst_ids$id[match(cbs_id, dst_ids$team)]
       out_df$src_id = player_ids$cbs_id[match(out_df$id, player_ids$id)]
     }
 
@@ -171,6 +173,7 @@ scrape_nfl = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NULL
                 "(.*?)\\s+\\b(QB|RB|WR|TE|K)\\b.*?([A-Z]{2,3})")
     } else {
       out_df$team = sub("\\s+DEF$", "", out_df$team)
+      out_df$pos = "DST"
     }
 
     if(pos %in% c("RB", "WR", "TE") && "pass_int" %in% names(out_df)) {
@@ -192,12 +195,12 @@ scrape_nfl = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NULL
     # Adding IDs
     out_df$id = get_mfl_id(
       out_df$nfl_id,
-      player_name = out_df$player,
+      player_name = if(pos == "DST") NULL else out_df$player,
       pos = out_df$pos,
       team = out_df$team
     )
     out_df = out_df %>%
-      dplyr::select(id, src_id = nfl_id, player, pos, team, dplyr::everything())
+      dplyr::select(id, src_id = nfl_id, any_of("player"), pos, team, dplyr::everything())
 
 
     Sys.sleep(2L) # temporary, until I get an argument for honoring the crawl delay
@@ -544,7 +547,14 @@ scrape_walterfootball <- function(pos = c("QB", "RB", "WR", "TE", "K"),
 
 # FleaFlicker ----
 scrape_fleaflicker <- function(pos = c("QB", "RB", "WR", "TE", "K", "DST", "DL", "LB", "DB"),
-                               season = 2022, week = NULL, draft = FALSE, weekly = TRUE) {
+                               season = NULL, week = NULL, draft = FALSE, weekly = TRUE) {
+
+  if(is.null(season)) {
+    season = get_scrape_year()
+  }
+  if(is.null(week)) {
+    week = get_scrape_week()
+  }
 
   # IDP positions
   if("DL" %in% pos) {
@@ -607,8 +617,9 @@ scrape_fleaflicker <- function(pos = c("QB", "RB", "WR", "TE", "K", "DST", "DL",
                          position, "&tableOffset=", offset)
 
 
-      Sys.sleep(1L)
-
+      if(i != 1L) {
+        Sys.sleep(2L)
+      }
 
       # 20 rows of player data by position
       html_page <- site_session %>%
@@ -670,13 +681,21 @@ scrape_fleaflicker <- function(pos = c("QB", "RB", "WR", "TE", "K", "DST", "DL",
             mutate(player = gsub("^Q(?=[A-Z])", "", player, perl = TRUE)) %>%
             extract(player, into = c("first_name", "last_name", "pos_temp", "team", "bye"),
                     regex = "(.*?)\\s+(.*?)\\s+(.*?)\\s+(.*?)\\s+.*(\\d+)\\)$", convert = TRUE) %>%
-            unite("player", first_name:last_name, sep = " ") %>%
+            tidyr::unite("player", first_name:last_name, sep = " ", remove = FALSE) %>%
             mutate(data_src = "FleaFlicker") %>%
             # rename for now so while loop works
             mutate(src_id = fleaflicker_id,
-                   id = get_mfl_id(fleaflicker_id, pos = pos, player_name = player),
+                   id = get_mfl_id(
+                     id_col = fleaflicker_id,
+                     player_name = player,
+                     first = first_name,
+                     last = last_name,
+                     pos = pos,
+                     team = team
+                     ),
                    pos_temp = pos) %>%
-            rename(pos = pos_temp)
+            rename(pos = pos_temp) %>%
+            select(-first_name, -last_name)
         }
       )
 
@@ -1098,7 +1117,7 @@ scrape_rtsports = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"),
 
 # ESPN ----
 scrape_espn = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NULL, week = NULL,
-                       draft = TRUE, weekly = FALSE) {
+                       draft = TRUE, weekly = TRUE) {
 
   message("\nThe ESPN scrape uses a 2 second delay between pages")
 
@@ -1108,15 +1127,6 @@ scrape_espn = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NUL
   if(is.null(week)) {
     week = get_scrape_week()
   }
-
-  team_nums = c(
-    "0" = "FA", "1" = "ATL", "2" = "BUF", "3" = "CHI",  "4" = "CIN", "5" = "CLE",
-    "6" = "DAL", "7" = "DEN", "8" = "DET", "9" = "GB", "10" = "TEN", "11" = "IND",
-    "12" = "KCC", "13" = "LV", "14" = "LAR", "15" = "MIA", "16" = "MIN", "17" = "NE",
-    "18" = "NO", "19" = "NYG", "20" = "NYJ",  "21" = "PHI", "22" = "ARI",
-    "23" = "PIT", "24" = "LAC", "25" = "SF", "26" = "SEA", "27" = "TB", "28" = "WAS",
-    "29" = "CAR", "30" = "JAC", "33" = "BAL", "34" = "HOU"
-  )
 
   slot_nums = c("QB" = 0, "RB" = 2, "WR" = 4, "TE" = 6, "K" = 17, "DST" = 16)
   position = pos
@@ -1128,7 +1138,6 @@ scrape_espn = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NUL
     }
 
     pos_idx = slot_nums[pos]
-    week = week + 1
     limit = dplyr::case_when(
       pos == "QB" ~ 42,
       pos == "RB" ~ 100,
@@ -1137,26 +1146,34 @@ scrape_espn = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NUL
       pos == "K" ~ 35,
       pos == "DST" ~ 32
     )
-    base_url = paste0("https://fantasy.espn.com/apis/v3/games/ffl/seasons/", season,
-                      "/segments/0/leaguedefaults/3?scoringPeriodId=0",
-                      "&view=kona_player_info")
-    cat(paste0("Scraping ", pos, " projections from"), base_url, sep = "\n  ")
+    base_url = paste0(
+      "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/", season,
+      "/segments/0/leaguedefaults/3?scoringPeriodId=0&view=kona_player_info"
+    )
+    cat(paste0("Scraping ", pos, " projections from"),
+        "https://fantasy.espn.com/football/players/projections", sep = "\n  ")
+
+    if(week == 0) {
+      filter_split_id = 0
+    } else {
+      filter_split_id = 1
+    }
 
     fantasy_filter = paste0(
-      "{\"players\":{",
-      "\"filterSlotIds\":{\"value\":[", pos_idx, "]},",
-      "\"filterStatsForExternalIds\":{\"value\":[", season, "]},",
-      "\"filterStatsForSourceIds\":{\"value\":[1]},",
-      "\"sortAppliedStatTotal\":{\"sortAsc\":false,\"sortPriority\":3,\"value\":\"10", season, "\"},",
-      "\"sortDraftRanks\":{\"sortPriority\":2,\"sortAsc\":true,\"value\":\"PPR\"},",
-      "\"sortPercOwned\":{\"sortAsc\":false,\"sortPriority\":4},",
-      "\"limit\":", limit, ",",
-      "\"offset\":0,",
-      "\"filterRanksForScoringPeriodIds\":{\"value\":[", 1, "]},",
-      "\"filterRanksForRankTypes\":{\"value\":[\"PPR\"]},",
-      "\"filterRanksForSlotIds\":{\"value\":[0,2,4,6,17,16]},",
-      "\"filterStatsForTopScoringPeriodIds\":{\"value\":2,",
-      "\"additionalValue\":[\"00", season, "\",\"10", season, "\",\"00", season - 1, "\",\"02", season, "\"]}}}"
+      '{"players":{',
+      '"filterSlotIds":{"value":[', pos_idx, ']},',
+      '"filterStatsForSourceIds":{"value":[1]},',
+      '"filterStatsForSplitTypeIds":{"value":[', filter_split_id, ']},',
+      '"sortAppliedStatTotal":{"sortAsc":false,"sortPriority":3,"value":"11', season, week, '"},',
+      '"sortDraftRanks":{"sortPriority":2,"sortAsc":true,"value":"PPR"},',
+      '"sortPercOwned":{"sortAsc":false,"sortPriority":4},',
+      '"limit":', limit, ',',
+      '"offset":0,',
+      '"filterRanksForScoringPeriodIds":{"value":[2]},',
+      '"filterRanksForRankTypes":{"value":["PPR"]},',
+      '"filterRanksForSlotIds":{"value":[0,2,4,6,17,16]},',
+      '"filterStatsForTopScoringPeriodIds":{"value":2,',
+      '"additionalValue":["00', season, '","10', season, '","11', season, week, '","02', season, '"]}}}'
     )
 
     espn_json = httr2::request(base_url) %>%
@@ -1165,7 +1182,7 @@ scrape_espn = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NUL
         Accept = "application/json",
         `Accept-Encoding` = "gzip, deflate, br",
         Connection = "keep-alive",
-        Host = "fantasy.espn.com",
+        Host = "lm-api-reads.fantasy.espn.com",
         `X-Fantasy-Source` = "kona",
         `X-Fantasy-Filter` = fantasy_filter,
       ) %>%
@@ -1178,6 +1195,11 @@ scrape_espn = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NUL
 
     for(i in seq_along(espn_json)) {
 
+      # Checking for empty stats (bye weeks)
+      if(length(espn_json[[i]]$player$stats) == 0L) {
+        next
+      }
+
       # Player stats (only those on)
       l_players[[i]] = espn_json[[i]]$player$stats[[1]]$stats
       l_players[[i]] = l_players[[i]][names(l_players[[i]]) %in% names(espn_columns)]
@@ -1187,11 +1209,10 @@ scrape_espn = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NUL
       # Misc player info
       l_players[[i]]$espn_id = espn_json[[i]]$id
       l_players[[i]]$player_name = espn_json[[i]]$player$fullName
-      l_players[[i]]$team = team_nums[as.character(espn_json[[i]]$player$proTeamId)]
+      l_players[[i]]$team = espn_team_nums[as.character(espn_json[[i]]$player$proTeamId)]
       l_players[[i]]$position = pos
     }
 
-    # TODO: Adding MFL ID, type.convert, reorder columns
     out_df = dplyr::bind_rows(l_players)
     out_df$data_src = "ESPN"
 
@@ -1204,7 +1225,8 @@ scrape_espn = function(pos = c("QB", "RB", "WR", "TE", "K", "DST"), season = NUL
       out_df$id = ffanalytics:::get_mfl_id(
         out_df$espn_id,
         player_name = out_df$player_name,
-        pos = out_df$position
+        pos = out_df$position,
+        team = out_df$team
       )
     }
 

@@ -11,13 +11,30 @@ get_mfl_id = function(id_col = NULL, player_name = NULL, first = NULL,
     team = team,
     id = NA
   )
+  max_len = max(lengths(l_p_info))
+  length_1 = lengths(l_p_info) == 1
+
+  l_p_info[length_1] = lapply(l_p_info[length_1], function(x) {
+    rep(x, max_len)
+  })
+
+  if(!is.null(player_name)) {
+    if(is.null(first)) {
+      l_p_info$first = sub("\\s+.*$", "", player_name)
+    }
+
+    if(is.null(last)) {
+      l_p_info$last = sub(".*?\\s+", "", player_name)
+    }
+  }
+
 
   l_p_info = Filter(Negate(is.null), l_p_info)
   l_p_info = lapply(l_p_info, function(x) {
-    x = rename_vec(x, unlist(pos_corrections))
+    x = rename_vec(toupper(x), unlist(pos_corrections))
     x = rename_vec(x, unlist(team_corrections))
-    x = gsub("[[:punct:]]+", "", x)
-    x = gsub("\\s+(?i)(defense|jr|sr|[iv]+)$", "", x)
+    x = gsub("\\s+(defense|jr|sr|[iv]+)\\.?$", "", tolower(x))
+    x = gsub("[[:punct:]]+|\\s+", "", x)
     x
   })
 
@@ -34,57 +51,64 @@ get_mfl_id = function(id_col = NULL, player_name = NULL, first = NULL,
   }
 
   ref_table = player_table %>%
+    mutate(across(where(is.character), tolower)) %>%
     transmute(id = id,
               player_name = paste(first_name, last_name),
-              player_name = gsub("\\s+(?i)(defense|jr|sr|[iv]+)$", "", player_name),
-              player_name = gsub("[[:punct:]]|\\s+", "", tolower(player_name)),
-              last = gsub("\\s+(?i)(defense|jr|sr|[iv]+)$", "", last_name),
-              last = gsub("[[:punct:]]|\\s+", "", tolower(last)),
-              pos = rename_vec(position, unlist(pos_corrections)),
-              team = rename_vec(team, unlist(team_corrections)))
-
-
-  df_p_info = as.data.frame(l_p_info)
+              player_name = gsub("\\s+(defense|jr|sr|[iv]+)\\.?$", "", player_name),
+              player_name = gsub("[[:punct:]]|\\s+", "", player_name),
+              last = gsub("\\s+(defense|jr|sr|[iv]+)\\.?$", "", last_name),
+              last = gsub("[[:punct:]]|\\s+", "", last),
+              first = gsub("\\s+(defense|jr|sr|[iv]+)\\.?$", "", first_name),
+              first = gsub("[[:punct:]]|\\s+", "", first),
+              pos = rename_vec(toupper(position), unlist(pos_corrections)),
+              pos = tolower(pos),
+              team = rename_vec(toupper(team), unlist(team_corrections)),
+              team = tolower(team))
 
   # If pos = DST, replace by team name
-  if("pos" %in% names(df_p_info)) {
-    df_p_info$id = ifelse(
-      df_p_info$pos == "DST",
-      ref_table$id[match(df_p_info$team, ref_table$team)],
-      df_p_info$id
+  if("pos" %in% names(l_p_info)) {
+    l_p_info$id = ifelse(
+      l_p_info$pos == "dst",
+      ref_table$id[match(l_p_info$team, ref_table$team)],
+      l_p_info$id
     )
-    if(all(df_p_info$pos == "DST")) {
-      return(df_p_info$id)
-    }
   }
 
-  if(!"player_name" %in% names(df_p_info)) {
-    df_p_info$player_name = tolower(paste0(df_p_info$first, df_p_info$last))
-  } else {
-    df_p_info$player_name = gsub("\\s+", "", tolower(df_p_info$player_name))
+  col_combos = list(
+    c("player_name", "pos", "team"),
+    c("last", "pos", "team"),
+    c("player_name", "team"),
+    c("player_name", "pos"),
+    # c("last", "team"),
+    c("first", "pos", "team")
+  )
+  combo_idx = vapply(col_combos, function(x) {
+    all(x %in% names(l_p_info))
+  }, logical(1L))
+
+  for(combo in col_combos[combo_idx]) {
+    id_idx = is.na(l_p_info$id)
+
+    l_p_info_vec = do.call(paste0, l_p_info[combo])[id_idx]
+    ref_table_vec = do.call(paste0, ref_table[combo])
+
+    # Removing dups from reftable
+    ref_dups = ref_table_vec[duplicated(ref_table_vec)]
+    keep_in_ref = !ref_table_vec %in% ref_dups
+    ref_table_vec = ref_table_vec[keep_in_ref]
+
+
+    l = lapply(l_p_info_vec, function(y) {
+      which(ref_table_vec %in% y)
+    })
+    l[lengths(l) != 1] = NA_integer_
+    match_vec = unlist(l)
+
+    l_p_info$id[id_idx] = ref_table$id[keep_in_ref][match_vec]
+
   }
+  l_p_info$id
 
-  df_p_info = df_p_info %>%
-    mutate(
-      id = dplyr::case_when(
-        !is.na(id) ~ id,
-        paste0(player_name, pos, team) %in% do.call(paste0, ref_table[c("player_name", "pos", "team")]) ~
-          ref_table$id[match(paste0(player_name, pos, team), do.call(paste0, ref_table[c("player_name", "pos", "team")]))],
-        paste0(player_name, pos, team) %in% do.call(paste0, ref_table[c("last", "pos", "team")]) ~
-          ref_table$id[match(paste0(player_name, pos, team), do.call(paste0, ref_table[c("last", "pos", "team")]))],
-        paste0(player_name, pos) %in% do.call(paste0, ref_table[c("player_name", "pos")]) ~
-          ref_table$id[match(paste0(player_name, pos), do.call(paste0, ref_table[c("player_name", "pos")]))],
-        paste0(player_name, pos) %in% do.call(paste0, ref_table[c("last", "pos")]) ~
-          ref_table$id[match(paste0(player_name, pos), do.call(paste0, ref_table[c("last", "pos")]))],
-        paste0(player_name, team) %in% do.call(paste0, ref_table[c("player_name", "team")]) ~
-          ref_table$id[match(paste0(player_name, team), do.call(paste0, ref_table[c("player_name", "team")]))],
-        paste0(player_name, team) %in% do.call(paste0, ref_table[c("last", "team")]) ~
-          ref_table$id[match(paste0(player_name, team), do.call(paste0, ref_table[c("last", "team")]))],
-        TRUE ~ NA_character_
-      )
-    )
-
-  df_p_info$id
 }
 
 get_scrape_year <- function(date) {
@@ -120,11 +144,9 @@ rename_vec = function(x, new_names, old_names = NULL) {
   x
 }
 
-
 omit_NA = function(x) {
   x[!is.na(x)]
 }
-
 
 row_sd = function(x, na.rm = FALSE) {
   if(is.data.frame(x)) {
@@ -145,5 +167,47 @@ row_sd = function(x, na.rm = FALSE) {
   r_sd[n_minus_1 <= 1] = NA
   r_sd
 }
+
+impute_and_score_sources = function(data_result, scoring_rules) {
+  scoring_objs = make_scoring_tables(scoring_rules)
+
+  data_result = impute_via_rates_and_mean(data_result, scoring_objs)
+  data_result = impute_bonus_cols(data_result, scoring_objs$scoring_tables)
+
+  data_result[] = source_points(data_result, scoring_rules, return_data_result = TRUE)
+  data_result
+}
+
+
+# Returns new player_id table
+update_player_id_table = function(player_id_table = NULL, id_column, value) {
+
+}
+
+get_pos_src_from_scrape = function(data_result) {
+  data_by_pos_src = lapply(data_result, function(x) {
+    split(x, x$data_src)
+  })
+  src_pos = stack(lapply(data_by_pos_src, names))
+  split(as.character(src_pos$ind), src_pos$values)
+}
+
+# TODO: This may be supersceeded by caching at the scrape level
+extract_src_scrapes_from_scrape = function(data_result) {
+  pos_src = get_pos_src_from_scrape(data_result)
+
+  lapply(setNames(names(pos_src), names(pos_src)), function(x) {
+    positions = setNames(pos_src[[x]], pos_src[[x]])
+    lapply(positions, function(pos) {
+      data_result[[pos]][data_result[[pos]]$data_src == x,]
+    })
+  })
+}
+
+
+
+
+
+
 
 

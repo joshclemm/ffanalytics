@@ -34,7 +34,7 @@ mad2 = function(x, center = median(x), constant = 1.4826, na.rm = FALSE,
 
 #' Weighted Harrell-Davis quantile estimator
 #'
-#' From: https://aakinshin.net/posts/weighted-quantiles/
+#' From: Andrey Akinshin (2023) "Weighted quantile estimators" arXiv:2304.07265 [stat.ME]
 whdquantile <- function(x, w = NA, probs, na.rm) { #na.rm is ignored
 
   cdf.gen <- function(n, p) {
@@ -439,7 +439,7 @@ add_ecr <- function(projection_table){
   lg_type <- attr(projection_table, "lg_type")
   season <- attr(projection_table, "season")
   week <- attr(projection_table, "week")
-  message("Scraping ECR data")
+  message("Scraping ECR data (w/ 2 second delay between pages if not cached)")
 
   if(week == 0) {
     rank_per = "draft"
@@ -463,10 +463,19 @@ add_ecr <- function(projection_table){
 
   scraped_ecr = vector("list", length(lg_type))
   for(i in seq_along(lg_type)) {
+    cached_objects = names(list_ffanalytics_cache(TRUE)$object)
+    req_obj = paste0(
+      "ecr_", rank_per, "_",
+      tolower(names(lg_type)[i]), "_",
+      tolower(lg_type[i]), ".rds"
+      )
+    if(!req_obj %in% cached_objects) {
+      Sys.sleep(2)
+    }
     scraped_ecr[[i]] = scrape_ecr(rank_period = rank_per,
                                   position = names(lg_type)[i],
                                   rank_type = lg_type[i])
-    Sys.sleep(1)
+
   }
   pos_ecr = dplyr::bind_rows(scraped_ecr) %>%
     dplyr::select(id, pos_ecr = avg, sd_ecr = std_dev)
